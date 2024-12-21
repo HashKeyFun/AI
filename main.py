@@ -1,16 +1,62 @@
-# This is a sample Python script.
+import os
+from fastapi import FastAPI, HTTPException
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+from pydantic import BaseModel, Field
+from dotenv import load_dotenv
+import logging
+import json
 
-# Press ⌃R to execute it or replace it with your code.
-# Press Double ⇧ to search everywhere for classes, files, tool windows, actions, and settings.
+from model import SerializableJsonOutputParser
+
+load_dotenv()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = FastAPI()
 
 
-def print_hi(name):
-    # Use a breakpoint in the code line below to debug your script.
-    print(f'Hi, {name}')  # Press ⌘F8 to toggle the breakpoint.
+class Score(BaseModel):
+    violentness: float = Field(description="violentness score of element")
+    sensationality: float = Field(description="sensationality score of element")
 
 
-# Press the green button in the gutter to run the script.
-if __name__ == '__main__':
-    print_hi('PyCharm')
+class Description(BaseModel):
+    description: str
 
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/
+
+def load_model():
+    llm = ChatOpenAI(
+        temperature=0.1,  # 창의성 (0.0 ~ 2.0)
+        model_name="gpt-4o",  # 모델명
+    )
+    parser = SerializableJsonOutputParser(pydantic_object=Score)
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", "Please evaluate {element} based on the criteria of violence and sensationality, and provide a "
+                       "score between 0 and 100 for each criterion."),
+            ("user", "#Format: {format_instructions}\n\n#Element: {element}"),
+        ]
+    )
+    prompt = prompt.partial(format_instructions=parser.get_format_instructions())
+
+    chain = prompt | llm | parser
+    return chain
+
+
+@app.post("/inspect/description")
+async def inspect_description(description: Description):
+
+    try:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if api_key is None:
+            raise HTTPException(status_code=500, detail="API key not configured.")
+
+        # 체인 실행
+        data = load_model().invoke({"element": str(description.description)})
+        # Pydantic 검증
+        score = Score(**data)
+        return {"result": score.dict()}
+    except Exception as e:
+        logger.error(f"Error during description inspection: {e}")
+        raise HTTPException(status_code=500, detail="Error processing the request.")
